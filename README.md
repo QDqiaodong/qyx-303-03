@@ -10,6 +10,12 @@
 - 对比里**算不算超预算**、批次**能不能落下去**，只认预算池当时**还没被占住的余额**：
   可占用余额 = 池子总额 − 所有生效批次已扣金额之和。两套口径冲突时，落地口径优先。
 
+## 约束模板删除规则
+- 删除模板是**软删除**（状态置为 DELETED 并从列表、GET 入口消失），不是物理抹除；已落批次、预算流水和场地占位不做任何级联变更。
+- 已删编号不能再用于方案对比，也不能再作为落地成团依据；服务端在对比和落地事务内都会回库确认模板仍为 ACTIVE，不信任前端页面或 Redis 里的旧条件副本。
+- 两人并发删除同一份模板，只有一份删除成功，另一个请求收到 404；删除状态更新是单条原子 SQL，失败时不会出现"列表没了但对比仍按它算"的中间态。
+- 已落地且仍生效的批次不受模板删除影响：预算占用不退回、场地 activeKey 不释放、交场状态和回执保持不变。
+
 ## 落地成团规则
 - 批次台账（group_batch）与预算进出流水（budget_transaction）在同一个数据库事务内做成，少一头整体回滚。
 - 同一天、同一场地只允许一条生效批次（active_key 部分唯一索引兜底），并发抢占只有一条成功，后到者收到 409 且预算不重复扣。
@@ -29,7 +35,8 @@
 - 关页再开，回执是否齐（GET 回执 200/404）、池子数字、供应商能否进场，读的都是同一份已提交状态。
 
 ## 主要 API
-- `POST /api/batches/land` 落地成团（planId、travelDate、groupSize、maxDurationDays、requiredActivities）
+- `POST /api/plans/compare/filter` 对比择优（可传 templateId；传了就只认库里仍 ACTIVE 的模板）
+- `POST /api/batches/land` 落地成团（planId、templateId、travelDate、groupSize、maxDurationDays、requiredActivities；templateId 已删则拒绝落地）
 - `GET  /api/batches?status=ACTIVE|INVALID` 批次台账
 - `POST /api/batches/{id}/contact-arrive` 第一道签字：现场对接人到场记录（{signerName}）
 - `POST /api/batches/{id}/review-sign` 第二道签字：科室复核人复核，齐了生成唯一回执（{signerName}）

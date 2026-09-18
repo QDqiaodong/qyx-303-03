@@ -9,6 +9,7 @@ import com.example.tuanjian.exception.BusinessConflictException;
 import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.TeamBuildingPlanRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import lombok.RequiredArgsConstructor;
@@ -34,6 +35,7 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
     private final GroupBatchRepository batchRepository;
     private final BudgetService budgetService;
     private final GroupBatchService groupBatchService;
+    private final ConstraintConditionService constraintService;
 
     @Override
     @Transactional
@@ -111,7 +113,17 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<PlanCompareResult> comparePlans(ConstraintRequest constraint) {
+        // 对比入口认编号也认状态：只要请求带来模板编号，就回库读取启用版本。
+        // 已删除模板不会继续用请求体/Redis 里的旧条件给方案开绿灯。
+        ConstraintRequest effectiveConstraint = constraint;
+        if (constraint.getTemplateId() != null) {
+            effectiveConstraint = constraintService.getActiveConstraintRequest(constraint.getTemplateId());
+        } else {
+            validateAdHocConstraint(constraint);
+        }
+
         List<TeamBuildingPlan> plans = planRepository.findAll();
         // 落地口径：预算只认池子当时未被占住的余额；模板上限仅用于建模板和对账展示
         BigDecimal availableBudget = budgetService.getPool().getAvailableAmount();
@@ -123,13 +135,26 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
 
         List<PlanCompareResult> results = new ArrayList<>();
         for (TeamBuildingPlan plan : plans) {
-            results.add(evaluatePlan(plan, constraint, availableBudget,
+            results.add(evaluatePlan(plan, effectiveConstraint, availableBudget,
                     batchesByPlan.getOrDefault(plan.getId(), List.of())));
         }
 
         results.sort(Comparator.comparing(PlanCompareResult::getAdaptabilityScore).reversed());
 
         return results;
+    }
+
+    private void validateAdHocConstraint(ConstraintRequest constraint) {
+        if (constraint.getBudgetLimit() == null
+                || constraint.getMaxDurationDays() == null
+                || constraint.getParticipantCount() == null) {
+            throw new IllegalArgumentException("预算上限、最大出行天数和参与人数不能为空");
+        }
+        if (constraint.getBudgetLimit().signum() <= 0
+                || constraint.getMaxDurationDays() <= 0
+                || constraint.getParticipantCount() <= 0) {
+            throw new IllegalArgumentException("预算上限、最大出行天数和参与人数必须为正数");
+        }
     }
 
     private PlanCompareResult evaluatePlan(TeamBuildingPlan plan, ConstraintRequest constraint,

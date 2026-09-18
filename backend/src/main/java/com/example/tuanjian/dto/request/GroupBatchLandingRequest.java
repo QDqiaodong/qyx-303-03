@@ -23,6 +23,9 @@ public class GroupBatchLandingRequest {
     @NotNull(message = "方案不能为空")
     private Long planId;
 
+    /** 当次对比选择的模板；落地前必须仍为启用状态，已删编号不能作为落地依据 */
+    private Long templateId;
+
     @NotNull(message = "出行日期不能为空")
     private LocalDate travelDate;
 
@@ -30,8 +33,7 @@ public class GroupBatchLandingRequest {
     @Positive(message = "成团人数必须为正数")
     private Integer groupSize;
 
-    /** 当次对比用的最大出行天数，服务端按方案现值重新校验 */
-    @NotNull(message = "最大出行天数不能为空")
+    /** 当次对比用的最大出行天数；templateId 存在时以库里的启用模板为准 */
     @Positive(message = "最大出行天数必须为正数")
     private Integer maxDurationDays;
 

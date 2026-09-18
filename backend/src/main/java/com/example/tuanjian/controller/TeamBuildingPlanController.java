@@ -7,9 +7,11 @@ import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.service.BudgetService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -19,6 +21,7 @@ import java.util.Map;
 @RequestMapping("/api/plans")
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
+@Validated
 public class TeamBuildingPlanController {
 
     private final TeamBuildingPlanService planService;
@@ -55,13 +58,15 @@ public class TeamBuildingPlanController {
     }
 
     @PostMapping("/compare")
-    public ResponseEntity<List<PlanCompareResult>> comparePlans(@Valid @RequestBody ConstraintRequest constraint) {
+    public ResponseEntity<List<PlanCompareResult>> comparePlans(
+            @NotNull(message = "对比条件不能为空") @Valid @RequestBody ConstraintRequest constraint) {
         List<PlanCompareResult> results = planService.comparePlans(constraint);
         return ResponseEntity.ok(results);
     }
 
     @PostMapping("/compare/filter")
-    public ResponseEntity<Map<String, Object>> compareAndFilter(@Valid @RequestBody ConstraintRequest constraint) {
+    public ResponseEntity<Map<String, Object>> compareAndFilter(
+            @NotNull(message = "对比条件不能为空") @Valid @RequestBody ConstraintRequest constraint) {
         List<PlanCompareResult> allResults = planService.comparePlans(constraint);
         List<PlanCompareResult> compliantResults = allResults.stream()
                 .filter(PlanCompareResult::getIsAllCompliant)

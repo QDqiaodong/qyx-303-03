@@ -17,6 +17,9 @@ import java.time.LocalDateTime;
 @AllArgsConstructor
 public class ConstraintCondition {
 
+    public static final String STATUS_ACTIVE = "ACTIVE";
+    public static final String STATUS_DELETED = "DELETED";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

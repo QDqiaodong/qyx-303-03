@@ -6,14 +6,17 @@ import com.example.tuanjian.dto.request.PlanCreateRequest;
 import com.example.tuanjian.dto.response.BudgetPoolView;
 import com.example.tuanjian.dto.response.PlanCompareResult;
 import com.example.tuanjian.entity.BudgetTransaction;
+import com.example.tuanjian.entity.ConstraintCondition;
 import com.example.tuanjian.entity.GroupBatch;
 import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.entity.VendorHandoffReceipt;
 import com.example.tuanjian.exception.BusinessConflictException;
 import com.example.tuanjian.repository.BudgetTransactionRepository;
+import com.example.tuanjian.repository.ConstraintConditionRepository;
 import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.VendorHandoffReceiptRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import jakarta.persistence.EntityManager;
@@ -23,11 +26,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -35,6 +40,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration,"
@@ -48,6 +54,10 @@ class GroupLandingIntegrationTest {
     private GroupBatchService batchService;
     @Autowired
     private BudgetService budgetService;
+    @Autowired
+    private ConstraintConditionService constraintService;
+    @Autowired
+    private ConstraintConditionRepository constraintRepository;
     @Autowired
     private GroupBatchRepository batchRepository;
     @Autowired
@@ -72,11 +82,15 @@ class GroupLandingIntegrationTest {
             entityManager.createNativeQuery("delete from vendor_handoff_receipt").executeUpdate();
             entityManager.createNativeQuery("delete from budget_transaction").executeUpdate();
             entityManager.createNativeQuery("delete from group_batch").executeUpdate();
+            entityManager.createNativeQuery("delete from constraint_condition").executeUpdate();
             entityManager.createNativeQuery("delete from team_building_plan").executeUpdate();
             entityManager.createNativeQuery(
                     "update budget_pool set total_amount=10000, occupied_amount=0 where id=1").executeUpdate();
             entityManager.clear();
         });
+
+        ValueOperations<String, String> valueOperations = org.mockito.Mockito.mock(ValueOperations.class);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         plan = planService.createPlan(PlanCreateRequest.builder()
                 .planName("山地拓展方案")
@@ -92,12 +106,17 @@ class GroupLandingIntegrationTest {
     }
 
     private GroupBatchLandingRequest landingRequest(long planId, String date, int size) {
+        return landingRequest(planId, date, size, null);
+    }
+
+    private GroupBatchLandingRequest landingRequest(long planId, String date, int size, Long templateId) {
         return GroupBatchLandingRequest.builder()
                 .planId(planId)
                 .travelDate(LocalDate.parse(date))
                 .groupSize(size)
                 .maxDurationDays(3)
                 .requiredActivities("户外拓展")
+                .templateId(templateId)
                 .build();
     }
 
@@ -109,6 +128,87 @@ class GroupLandingIntegrationTest {
                 .participantCount(people)
                 .requiredActivities("户外拓展")
                 .build();
+    }
+
+    private ConstraintCondition createTemplate() {
+        return constraintService.createTemplate(ConstraintRequest.builder()
+                .templateName("测试模板")
+                .budgetLimit(new BigDecimal("999999.00"))
+                .maxDurationDays(3)
+                .participantCount(20)
+                .requiredActivities("户外拓展")
+                .build());
+    }
+
+    @Test
+    void deletedTemplate_disappearsFromList_andCannotCompareOrLand_butExistingBatchStays() {
+        ConstraintCondition template = createTemplate();
+        GroupBatchLandingRequest landReq = landingRequest(plan.getId(), "2029-01-01", 20, template.getId());
+        GroupBatch batch = batchService.land(landReq, null);
+        BigDecimal occupiedBeforeDelete = budgetService.getPool().getOccupiedAmount();
+
+        constraintService.deleteTemplate(template.getId());
+
+        assertTrue(constraintService.getAllTemplates().stream().noneMatch(t -> t.getId().equals(template.getId())),
+                "已删模板必须从列表入口消失");
+        assertEquals(ConstraintCondition.STATUS_DELETED,
+                constraintService.getTemplateById(template.getId()).getStatus(),
+                "删除是状态留痕，不能误动已落地批次的历史依据");
+
+        ConstraintRequest deletedRequest = ConstraintRequest.builder()
+                .templateId(template.getId())
+                .templateName(template.getTemplateName())
+                .budgetLimit(template.getBudgetLimit())
+                .maxDurationDays(template.getMaxDurationDays())
+                .participantCount(template.getParticipantCount())
+                .requiredActivities(template.getRequiredActivities())
+                .build();
+        assertThrows(NoSuchElementException.class, () -> planService.comparePlans(deletedRequest));
+
+        GroupBatchLandingRequest landFromDeleted =
+                landingRequest(plan.getId(), "2029-01-02", 20, template.getId());
+        assertThrows(NoSuchElementException.class, () -> batchService.land(landFromDeleted, null));
+
+        GroupBatch reloaded = batchService.getBatch(batch.getId());
+        assertEquals(GroupBatch.STATUS_ACTIVE, reloaded.getStatus(), "删除模板不冲掉已生效批次");
+        assertNotNull(reloaded.getActiveKey(), "删除模板不释放已占场地");
+        assertEquals(0, occupiedBeforeDelete.compareTo(budgetService.getPool().getOccupiedAmount()),
+                "删除模板不能改变预算占用");
+        assertEquals(1L, batchRepository.count());
+        assertEquals(1, transactionRepository.findAll().stream()
+                .filter(t -> "HOLD".equals(t.getType())).count());
+    }
+
+    @Test
+    void concurrentTemplateDelete_onlyOneSucceeds_otherSeesMissingTemplate() throws Exception {
+        ConstraintCondition template = createTemplate();
+        int threads = 2;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger missing = new AtomicInteger();
+
+        for (int i = 0; i < threads; i++) {
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    constraintService.deleteTemplate(template.getId());
+                    success.incrementAndGet();
+                } catch (NoSuchElementException e) {
+                    missing.incrementAndGet();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+        start.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+
+        assertEquals(1, success.get());
+        assertEquals(1, missing.get());
+        assertEquals(ConstraintCondition.STATUS_DELETED, constraintRepository.findById(template.getId()).orElseThrow().getStatus());
     }
 
     @Test

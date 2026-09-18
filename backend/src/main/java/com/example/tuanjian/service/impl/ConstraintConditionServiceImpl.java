@@ -12,6 +12,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.TimeUnit;
@@ -37,9 +38,10 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
                 .maxDurationDays(request.getMaxDurationDays())
                 .participantCount(request.getParticipantCount())
                 .requiredActivities(request.getRequiredActivities())
-                .status("ACTIVE")
+                .status(ConstraintCondition.STATUS_ACTIVE)
                 .build();
         ConstraintCondition saved = constraintRepository.save(constraint);
+        request.setTemplateId(saved.getId());
         saveToRedis("template:" + saved.getId(), request);
         return saved;
     }
@@ -47,7 +49,8 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
     @Override
     @Transactional
     public ConstraintCondition updateTemplate(Long id, ConstraintRequest request) {
-        ConstraintCondition constraint = constraintRepository.findById(id)
+        ConstraintCondition constraint = constraintRepository
+                .findByIdAndStatus(id, ConstraintCondition.STATUS_ACTIVE)
                 .orElseThrow(() -> new NoSuchElementException("约束模板不存在: " + id));
         constraint.setTemplateName(request.getTemplateName());
         constraint.setBudgetLimit(request.getBudgetLimit());
@@ -55,6 +58,7 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
         constraint.setParticipantCount(request.getParticipantCount());
         constraint.setRequiredActivities(request.getRequiredActivities());
         ConstraintCondition saved = constraintRepository.save(constraint);
+        request.setTemplateId(id);
         saveToRedis("template:" + saved.getId(), request);
         return saved;
     }
@@ -62,10 +66,16 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
     @Override
     @Transactional
     public void deleteTemplate(Long id) {
-        if (!constraintRepository.existsById(id)) {
+        // 条件更新是一条原子 SQL：只有仍启用的模板能被删。并发删除只有一个事务影响 1 行，
+        // 后到者看到 404；更新失败则状态不变，不会出现列表隐藏但对比仍认旧编号之外的中间态。
+        int updated = constraintRepository.markDeletedIfActive(
+                id,
+                ConstraintCondition.STATUS_ACTIVE,
+                ConstraintCondition.STATUS_DELETED,
+                LocalDateTime.now());
+        if (updated == 0) {
             throw new NoSuchElementException("约束模板不存在: " + id);
         }
-        constraintRepository.deleteById(id);
         deleteFromRedis("template:" + id);
     }
 
@@ -76,8 +86,30 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
     }
 
     @Override
+    public ConstraintCondition getActiveTemplateById(Long id) {
+        return constraintRepository.findByIdAndStatus(id, ConstraintCondition.STATUS_ACTIVE)
+                .orElseThrow(() -> new NoSuchElementException("约束模板不存在或已删除: " + id));
+    }
+
+    @Override
+    @Transactional
+    public ConstraintRequest getActiveConstraintRequest(Long id) {
+        ConstraintCondition template = constraintRepository
+                .findByIdAndStatusForUpdate(id, ConstraintCondition.STATUS_ACTIVE)
+                .orElseThrow(() -> new NoSuchElementException("约束模板不存在或已删除: " + id));
+        return ConstraintRequest.builder()
+                .templateId(template.getId())
+                .templateName(template.getTemplateName())
+                .budgetLimit(template.getBudgetLimit())
+                .maxDurationDays(template.getMaxDurationDays())
+                .participantCount(template.getParticipantCount())
+                .requiredActivities(template.getRequiredActivities())
+                .build();
+    }
+
+    @Override
     public List<ConstraintCondition> getAllTemplates() {
-        return constraintRepository.findAllByOrderByCreatedAtDesc();
+        return constraintRepository.findByStatusOrderByCreatedAtDesc(ConstraintCondition.STATUS_ACTIVE);
     }
 
     @Override

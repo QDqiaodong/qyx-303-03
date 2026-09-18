@@ -1,5 +1,6 @@
 package com.example.tuanjian.service.impl;
 
+import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.dto.request.GroupBatchLandingRequest;
 import com.example.tuanjian.entity.GroupBatch;
 import com.example.tuanjian.entity.TeamBuildingPlan;
@@ -9,6 +10,7 @@ import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.TeamBuildingPlanRepository;
 import com.example.tuanjian.repository.VendorHandoffReceiptRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,12 +33,27 @@ public class GroupBatchServiceImpl implements GroupBatchService {
     private final TeamBuildingPlanRepository planRepository;
     private final VendorHandoffReceiptRepository receiptRepository;
     private final BudgetService budgetService;
+    private final ConstraintConditionService constraintService;
 
     private static final DateTimeFormatter BATCH_NO_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     @Override
     @Transactional
     public GroupBatch land(GroupBatchLandingRequest request, String templateBudgetNote) {
+        ConstraintRequest template = null;
+        if (request.getTemplateId() != null) {
+            // 落地入口再次认编号和状态：对比后模板被删，不能继续拿旧编号当财务落地依据。
+            template = constraintService.getActiveConstraintRequest(request.getTemplateId());
+        }
+
+        Integer maxDurationDays = template == null ? request.getMaxDurationDays() : template.getMaxDurationDays();
+        if (maxDurationDays == null) {
+            throw new IllegalArgumentException("最大出行天数不能为空");
+        }
+        String requiredActivities = template == null
+                ? request.getRequiredActivities()
+                : template.getRequiredActivities();
+
         TeamBuildingPlan plan = planRepository.findById(request.getPlanId())
                 .orElseThrow(() -> new NoSuchElementException("方案不存在: " + request.getPlanId()));
 
@@ -54,14 +71,14 @@ public class GroupBatchServiceImpl implements GroupBatchService {
                     String.format("成团人数 %d 不在方案支持范围 %d-%d 人内",
                             groupSize, plan.getMinParticipants(), plan.getMaxParticipants()));
         }
-        if (plan.getDurationDays() > request.getMaxDurationDays()) {
+        if (plan.getDurationDays() > maxDurationDays) {
             throw new BusinessConflictException(
                     String.format("方案时长 %d 天超过当次对比的最大出行天数 %d 天",
-                            plan.getDurationDays(), request.getMaxDurationDays()));
+                            plan.getDurationDays(), maxDurationDays));
         }
-        if (!containsRequiredActivities(plan.getSuitableActivities(), request.getRequiredActivities())) {
+        if (!containsRequiredActivities(plan.getSuitableActivities(), requiredActivities)) {
             throw new BusinessConflictException("方案不满足当次对比的必备活动要求: "
-                    + request.getRequiredActivities());
+                    + requiredActivities);
         }
 
         BigDecimal lockedCostPerPerson = plan.getCostPerPerson();

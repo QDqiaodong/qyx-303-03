@@ -132,12 +132,13 @@ const deleteTemplate = async (id) => {
  emit('refresh');
  }
  catch (error) {
- ElMessage.error('删除失败');
+ ElMessage.error(error.response?.data?.message || '删除失败');
  }
 };
 const useTemplate = async (row) => {
  try {
  const constraintData = {
+ templateId: row.id,
  templateName: row.templateName,
  budgetLimit: row.budgetLimit,
  maxDurationDays: row.maxDurationDays,

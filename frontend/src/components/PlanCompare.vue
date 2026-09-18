@@ -15,20 +15,37 @@
 
       <el-form :model="constraintForm" :rules="rules" ref="formRef" label-width="120px" class="constraint-form">
         <div class="form-row">
+          <el-form-item label="约束模板" required>
+            <el-select
+              v-model="constraintForm.templateId"
+              placeholder="请选择有效模板"
+              style="width: 220px"
+              @change="handleTemplateChange"
+            >
+              <el-option
+                v-for="template in templates"
+                :key="template.id"
+                :label="template.templateName"
+                :value="template.id"
+              />
+            </el-select>
+            <el-button link type="primary" size="small" @click="loadTemplates">刷新模板</el-button>
+            <span class="form-hint">删除后的编号不能再对比或落地</span>
+          </el-form-item>
           <el-form-item label="预算上限(模板)" prop="budgetLimit">
-            <el-input-number v-model="constraintForm.budgetLimit" :min="0" :step="100" style="width: 200px" />
-            <span class="form-hint">仅用于建模板/对账，不参与合规裁决</span>
+            <el-input-number v-model="constraintForm.budgetLimit" :min="0" :step="100" style="width: 200px" disabled />
+            <span class="form-hint">模板对账值，仅核对不参与裁决</span>
           </el-form-item>
           <el-form-item label="最大出行天数" prop="maxDurationDays">
-            <el-input-number v-model="constraintForm.maxDurationDays" :min="1" :max="30" style="width: 200px" />
+            <el-input-number v-model="constraintForm.maxDurationDays" :min="1" :max="30" style="width: 200px" disabled />
           </el-form-item>
           <el-form-item label="参与人数" prop="participantCount">
-            <el-input-number v-model="constraintForm.participantCount" :min="1" style="width: 200px" />
+            <el-input-number v-model="constraintForm.participantCount" :min="1" style="width: 200px" disabled />
           </el-form-item>
         </div>
         <div class="form-row">
           <el-form-item label="必备活动" prop="requiredActivities">
-            <el-input v-model="constraintForm.requiredActivities" placeholder="多个活动用逗号分隔，如：户外拓展,聚餐" style="width: 450px" />
+            <el-input v-model="constraintForm.requiredActivities" placeholder="多个活动用逗号分隔，如：户外拓展,聚餐" style="width: 450px" disabled />
           </el-form-item>
         </div>
       </el-form>
@@ -233,7 +250,9 @@ const selectedPlan = ref(null)
 const autoRefresh = ref(false)
 const budgetPool = reactive({ totalAmount: 0, occupiedAmount: 0, availableAmount: 0 })
 const poolLoading = ref(false)
+const templates = ref([])
 const constraintForm = reactive({
+  templateId: null,
   templateName: '临时约束',
   budgetLimit: 50000,
   maxDurationDays: 3,
@@ -297,7 +316,54 @@ const loadPool = async () => {
   }
 }
 
+const applyTemplate = (template) => {
+  constraintForm.templateId = template.id
+  constraintForm.templateName = template.templateName
+  constraintForm.budgetLimit = template.budgetLimit
+  constraintForm.maxDurationDays = template.maxDurationDays
+  constraintForm.participantCount = template.participantCount
+  constraintForm.requiredActivities = template.requiredActivities || ''
+}
+
+const clearResultsAndSelection = () => {
+  results.value = []
+  allResults.value = []
+  selectedPlan.value = null
+}
+
+const loadTemplates = async (preserveSelected = true) => {
+  try {
+    const res = await constraintApi.getAllTemplates()
+    templates.value = res.data
+    if (constraintForm.templateId) {
+      const current = res.data.find(t => t.id === constraintForm.templateId)
+      if (current) {
+        applyTemplate(current)
+      } else {
+        constraintForm.templateId = null
+        if (!preserveSelected) {
+          clearResultsAndSelection()
+          ElMessage.error('原约束模板已删除，不能继续使用其编号对比或落地，请重新选择模板')
+        }
+      }
+    }
+  } catch (e) {
+    ElMessage.error('约束模板加载失败')
+  }
+}
+
+const handleTemplateChange = (templateId) => {
+  const template = templates.value.find(t => t.id === templateId)
+  if (template) {
+    applyTemplate(template)
+  }
+}
+
 const comparePlans = async () => {
+  if (!constraintForm.templateId) {
+    ElMessage.warning('请先选择一份仍有效的约束模板')
+    return
+  }
   if (!formRef.value) return
   await formRef.value.validate(async (valid) => {
     if (valid) {
@@ -320,13 +386,22 @@ const comparePlans = async () => {
         }
         ElMessage.success(`对比完成，共 ${res.data.totalCount} 个方案，其中 ${res.data.compliantCount} 个合规（预算按池子可占用余额 ¥${formatMoney(budgetPool.availableAmount)} 判定）`)
       } catch (error) {
-        ElMessage.error('对比失败')
+        if (error.response?.status === 404) {
+          constraintForm.templateId = null
+          clearResultsAndSelection()
+          await loadTemplates(false)
+        }
+        ElMessage.error(error.response?.data?.message || '对比失败')
       }
     }
   })
 }
 
 const openLandDialog = (row) => {
+  if (!constraintForm.templateId) {
+    ElMessage.warning('请先选择一份仍有效的约束模板')
+    return
+  }
   landRow.value = row
   landForm.travelDate = ''
   landForm.groupSize = constraintForm.participantCount || row.minParticipants
@@ -346,6 +421,7 @@ const submitLand = async () => {
   try {
     const payload = {
       planId: landRow.value.planId,
+      templateId: constraintForm.templateId,
       travelDate: landForm.travelDate,
       groupSize: landForm.groupSize,
       maxDurationDays: constraintForm.maxDurationDays,
@@ -358,9 +434,13 @@ const submitLand = async () => {
     // 关掉页面再进来三处要对得上：立即刷新池子和对比结果
     await comparePlans()
   } catch (error) {
+    if (error.response?.status === 404) {
+      constraintForm.templateId = null
+      await loadTemplates(false)
+    }
     const msg = error.response?.data?.message || '落地失败'
     ElMessage.error(msg)
-    // 场地被并发抢占或余额变化时刷新，保证后到的人看到的是最新状态
+    // 场地被并发抢占、模板并发删除或余额变化时刷新，保证后到的人看到的是最新状态
     await loadPool()
   } finally {
     landing.value = false
@@ -382,6 +462,15 @@ const loadFromCache = async () => {
   try {
     const res = await constraintApi.getFromRedis('current')
     if (res && res.data) {
+      await loadTemplates()
+      if (res.data.templateId && !templates.value.some(t => t.id === res.data.templateId)) {
+        constraintForm.templateId = null
+        clearResultsAndSelection()
+        ElMessage.error('缓存中的约束模板已删除，不能再用于对比或落地')
+        return
+      }
+      constraintForm.templateId = res.data.templateId || null
+      constraintForm.templateName = res.data.templateName || '临时约束'
       constraintForm.budgetLimit = res.data.budgetLimit
       constraintForm.maxDurationDays = res.data.maxDurationDays
       constraintForm.participantCount = res.data.participantCount
@@ -423,7 +512,8 @@ watch(autoRefresh, (newVal) => {
 })
 
 onMounted(() => {
-  comparePlans()
+  loadTemplates()
+  loadPool()
 })
 </script>
 

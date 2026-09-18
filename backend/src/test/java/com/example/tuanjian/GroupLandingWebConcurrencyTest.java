@@ -71,6 +71,7 @@ class GroupLandingWebConcurrencyTest {
             entityManager.createNativeQuery("delete from vendor_handoff_receipt").executeUpdate();
             entityManager.createNativeQuery("delete from budget_transaction").executeUpdate();
             entityManager.createNativeQuery("delete from group_batch").executeUpdate();
+            entityManager.createNativeQuery("delete from constraint_condition").executeUpdate();
             entityManager.createNativeQuery("delete from team_building_plan").executeUpdate();
             entityManager.createNativeQuery(
                     "update budget_pool set total_amount=100000, occupied_amount=0 where id=1").executeUpdate();

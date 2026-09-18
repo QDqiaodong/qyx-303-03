@@ -1,6 +1,7 @@
 package com.example.tuanjian.config;
 
 import com.example.tuanjian.exception.BusinessConflictException;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -57,6 +58,18 @@ public class GlobalExceptionHandler {
             errors.put(fieldName, errorMessage);
         });
         log.error("Validation failed: {}", errors);
+        Map<String, Object> response = new HashMap<>();
+        response.put("error", "VALIDATION_ERROR");
+        response.put("message", "参数验证失败");
+        response.put("details", errors);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Map<String, Object>> handleConstraintViolation(ConstraintViolationException ex) {
+        Map<String, String> errors = new HashMap<>();
+        ex.getConstraintViolations().forEach(violation ->
+                errors.put(violation.getPropertyPath().toString(), violation.getMessage()));
         Map<String, Object> response = new HashMap<>();
         response.put("error", "VALIDATION_ERROR");
         response.put("message", "参数验证失败");

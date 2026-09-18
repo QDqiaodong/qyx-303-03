@@ -3,10 +3,10 @@ package com.example.tuanjian.controller;
 import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.entity.ConstraintCondition;
 import com.example.tuanjian.service.ConstraintConditionService;
-import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -15,19 +15,21 @@ import java.util.List;
 @RequestMapping("/api/constraints")
 @RequiredArgsConstructor
 @CrossOrigin(origins = "*")
+@Validated
 public class ConstraintConditionController {
 
     private final ConstraintConditionService constraintService;
 
     @PostMapping
-    public ResponseEntity<ConstraintCondition> createTemplate(@Valid @RequestBody ConstraintRequest request) {
+    public ResponseEntity<ConstraintCondition> createTemplate(
+            @Validated(ConstraintRequest.RequireTemplateFields.class) @RequestBody ConstraintRequest request) {
         ConstraintCondition constraint = constraintService.createTemplate(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(constraint);
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<ConstraintCondition> getTemplateById(@PathVariable Long id) {
-        ConstraintCondition constraint = constraintService.getTemplateById(id);
+        ConstraintCondition constraint = constraintService.getActiveTemplateById(id);
         return ResponseEntity.ok(constraint);
     }
 
@@ -38,7 +40,8 @@ public class ConstraintConditionController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<ConstraintCondition> updateTemplate(@PathVariable Long id, @Valid @RequestBody ConstraintRequest request) {
+    public ResponseEntity<ConstraintCondition> updateTemplate(@PathVariable Long id,
+            @Validated(ConstraintRequest.RequireTemplateFields.class) @RequestBody ConstraintRequest request) {
         ConstraintCondition constraint = constraintService.updateTemplate(id, request);
         return ResponseEntity.ok(constraint);
     }
