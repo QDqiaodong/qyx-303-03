@@ -11,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -37,47 +39,79 @@ public class ConstraintConditionServiceImpl implements ConstraintConditionServic
                 .maxDurationDays(request.getMaxDurationDays())
                 .participantCount(request.getParticipantCount())
                 .requiredActivities(request.getRequiredActivities())
-                .status("ACTIVE")
+                .status(ConstraintCondition.STATUS_ACTIVE)
                 .build();
-        ConstraintCondition saved = constraintRepository.save(constraint);
-        saveToRedis("template:" + saved.getId(), request);
-        return saved;
+        return constraintRepository.save(constraint);
     }
 
     @Override
     @Transactional
     public ConstraintCondition updateTemplate(Long id, ConstraintRequest request) {
-        ConstraintCondition constraint = constraintRepository.findById(id)
-                .orElseThrow(() -> new NoSuchElementException("约束模板不存在: " + id));
+        ConstraintCondition constraint = getActiveTemplateForUpdate(id);
         constraint.setTemplateName(request.getTemplateName());
         constraint.setBudgetLimit(request.getBudgetLimit());
         constraint.setMaxDurationDays(request.getMaxDurationDays());
         constraint.setParticipantCount(request.getParticipantCount());
         constraint.setRequiredActivities(request.getRequiredActivities());
-        ConstraintCondition saved = constraintRepository.save(constraint);
-        saveToRedis("template:" + saved.getId(), request);
-        return saved;
+        return constraintRepository.save(constraint);
     }
 
     @Override
     @Transactional
     public void deleteTemplate(Long id) {
-        if (!constraintRepository.existsById(id)) {
+        ConstraintCondition constraint = constraintRepository.findByIdForUpdate(id)
+                .orElseThrow(() -> new NoSuchElementException("约束模板不存在: " + id));
+        if (!ConstraintCondition.STATUS_ACTIVE.equals(constraint.getStatus())) {
+            // 并发删除落败方必须看到“模板已不在”，而不是还能拿它当旧依据
             throw new NoSuchElementException("约束模板不存在: " + id);
         }
-        constraintRepository.deleteById(id);
-        deleteFromRedis("template:" + id);
+        constraint.setStatus(ConstraintCondition.STATUS_DELETED);
+        constraintRepository.saveAndFlush(constraint);
+        evictTemplateCacheAfterCommit(id);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public ConstraintCondition getTemplateById(Long id) {
-        return constraintRepository.findById(id)
+        return getActiveTemplate(id);
+    }
+
+    @Override
+    public ConstraintCondition getActiveTemplateForUpdate(Long id) {
+        return constraintRepository.findByIdAndStatusForUpdate(id, ConstraintCondition.STATUS_ACTIVE)
+                .orElseThrow(() -> new NoSuchElementException("约束模板不存在或已删除: " + id));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ConstraintCondition> getAllTemplates() {
+        return constraintRepository.findByStatusOrderByCreatedAtDesc(ConstraintCondition.STATUS_ACTIVE);
+    }
+
+    private ConstraintCondition getActiveTemplate(Long id) {
+        return constraintRepository.findByIdAndStatus(id, ConstraintCondition.STATUS_ACTIVE)
                 .orElseThrow(() -> new NoSuchElementException("约束模板不存在: " + id));
     }
 
-    @Override
-    public List<ConstraintCondition> getAllTemplates() {
-        return constraintRepository.findAllByOrderByCreatedAtDesc();
+    private void evictTemplateCacheAfterCommit(Long id) {
+        Runnable evict = () -> {
+            try {
+                deleteFromRedis("template:" + id);
+                deleteFromRedis("current");
+            } catch (Exception e) {
+                log.warn("模板 {} 已删除，但旧缓存清理失败，入口仍会按数据库状态拒绝", id, e);
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    evict.run();
+                }
+            });
+        } else {
+            evict.run();
+        }
     }
 
     @Override

@@ -1,6 +1,7 @@
 package com.example.tuanjian.service.impl;
 
 import com.example.tuanjian.dto.request.GroupBatchLandingRequest;
+import com.example.tuanjian.entity.ConstraintCondition;
 import com.example.tuanjian.entity.GroupBatch;
 import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.entity.VendorHandoffReceipt;
@@ -9,6 +10,7 @@ import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.TeamBuildingPlanRepository;
 import com.example.tuanjian.repository.VendorHandoffReceiptRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +33,7 @@ public class GroupBatchServiceImpl implements GroupBatchService {
     private final TeamBuildingPlanRepository planRepository;
     private final VendorHandoffReceiptRepository receiptRepository;
     private final BudgetService budgetService;
+    private final ConstraintConditionService constraintService;
 
     private static final DateTimeFormatter BATCH_NO_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
@@ -39,6 +42,8 @@ public class GroupBatchServiceImpl implements GroupBatchService {
     public GroupBatch land(GroupBatchLandingRequest request, String templateBudgetNote) {
         TeamBuildingPlan plan = planRepository.findById(request.getPlanId())
                 .orElseThrow(() -> new NoSuchElementException("方案不存在: " + request.getPlanId()));
+        // 落地依据必须在本事务中锁定为仍启用的模板；已删除编号直接 404，不能用页面旧条件落批次
+        ConstraintCondition template = constraintService.getActiveTemplateForUpdate(request.getTemplateId());
 
         int groupSize = request.getGroupSize();
         String activeKey = GroupBatchService.activeKey(request.getTravelDate(), plan.getVenue());
@@ -54,14 +59,14 @@ public class GroupBatchServiceImpl implements GroupBatchService {
                     String.format("成团人数 %d 不在方案支持范围 %d-%d 人内",
                             groupSize, plan.getMinParticipants(), plan.getMaxParticipants()));
         }
-        if (plan.getDurationDays() > request.getMaxDurationDays()) {
+        if (plan.getDurationDays() > template.getMaxDurationDays()) {
             throw new BusinessConflictException(
-                    String.format("方案时长 %d 天超过当次对比的最大出行天数 %d 天",
-                            plan.getDurationDays(), request.getMaxDurationDays()));
+                    String.format("方案时长 %d 天超过模板【%s】的最大出行天数 %d 天",
+                            plan.getDurationDays(), template.getTemplateName(), template.getMaxDurationDays()));
         }
-        if (!containsRequiredActivities(plan.getSuitableActivities(), request.getRequiredActivities())) {
-            throw new BusinessConflictException("方案不满足当次对比的必备活动要求: "
-                    + request.getRequiredActivities());
+        if (!containsRequiredActivities(plan.getSuitableActivities(), template.getRequiredActivities())) {
+            throw new BusinessConflictException("方案不满足模板【" + template.getTemplateName()
+                    + "】的必备活动要求: " + template.getRequiredActivities());
         }
 
         BigDecimal lockedCostPerPerson = plan.getCostPerPerson();
@@ -74,6 +79,8 @@ public class GroupBatchServiceImpl implements GroupBatchService {
                 .batchNo(batchNo)
                 .planId(plan.getId())
                 .planName(plan.getPlanName())
+                .constraintTemplateId(template.getId())
+                .constraintTemplateName(template.getTemplateName())
                 .venue(plan.getVenue())
                 .travelDate(request.getTravelDate())
                 .groupSize(groupSize)
@@ -95,7 +102,8 @@ public class GroupBatchServiceImpl implements GroupBatchService {
 
         // 同事务扣款 + 写流水：余额不足抛 BusinessConflictException，整体回滚（台账也回滚）
         String remark = "落地成团 " + batchNo + "：" + plan.getPlanName()
-                + "，" + groupSize + " 人 × ¥" + lockedCostPerPerson.toPlainString();
+                + "，" + groupSize + " 人 × ¥" + lockedCostPerPerson.toPlainString()
+                + "；落地依据模板：" + template.getTemplateName() + "(#" + template.getId() + ")";
         budgetService.hold(saved.getId(), plan.getId(), lockedAmount,
                 templateBudgetNote == null ? remark : remark + "（" + templateBudgetNote + "）");
 

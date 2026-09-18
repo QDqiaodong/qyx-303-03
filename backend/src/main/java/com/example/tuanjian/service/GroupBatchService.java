@@ -10,9 +10,10 @@ import java.util.List;
 public interface GroupBatchService {
 
     /**
-     * 落地成团：按当次对比口径重新校验方案（天数/人数/活动 + 池子余额），
-     * 写批次台账并从预算池扣钱，两件事在同一个事务里同时做成。
-     * 同一天同一场地已有生效批次、或并发抢占时，抛冲突异常且预算不扣。
+     * 落地成团：模板必须仍启用，服务端在本事务中锁定模板并按模板现值校验方案
+     * （天数/必备活动 + 方案人数范围 + 池子余额）。写批次台账并从预算池扣钱，
+     * 两件事在同一个事务里同时做成。模板已删、同日同场地已有生效批次、或并发抢占时，
+     * 抛异常且预算不扣。
      */
     GroupBatch land(GroupBatchLandingRequest request, String templateBudgetNote);
 

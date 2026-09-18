@@ -127,29 +127,23 @@ const deleteTemplate = async (id) => {
  });
  try {
  await constraintApi.deleteTemplate(id);
+ localStorage.removeItem('currentConstraintTemplate');
  ElMessage.success('删除成功');
  loadTemplates();
  emit('refresh');
  }
  catch (error) {
+ if (error.response?.status === 404) {
+ ElMessage.error(error.response.data?.message || '模板已不存在，列表已刷新');
+ loadTemplates();
+ } else {
  ElMessage.error('删除失败');
  }
+ }
 };
-const useTemplate = async (row) => {
- try {
- const constraintData = {
- templateName: row.templateName,
- budgetLimit: row.budgetLimit,
- maxDurationDays: row.maxDurationDays,
- participantCount: row.participantCount,
- requiredActivities: row.requiredActivities
- };
- await constraintApi.saveToRedis('current', constraintData);
- ElMessage.success('已保存到缓存，可在方案对比页面使用');
- }
- catch (error) {
- ElMessage.error('保存失败');
- }
+const useTemplate = (row) => {
+ localStorage.setItem('currentConstraintTemplate', JSON.stringify(row));
+ ElMessage.success('已选用该模板，可在方案对比页面使用');
 };
 const submitForm = async () => {
  if (!formRef.value)

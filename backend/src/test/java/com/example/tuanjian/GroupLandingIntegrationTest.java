@@ -14,11 +14,14 @@ import com.example.tuanjian.repository.BudgetTransactionRepository;
 import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.VendorHandoffReceiptRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentMatchers;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -28,6 +31,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,6 +53,8 @@ class GroupLandingIntegrationTest {
     @Autowired
     private BudgetService budgetService;
     @Autowired
+    private ConstraintConditionService constraintService;
+    @Autowired
     private GroupBatchRepository batchRepository;
     @Autowired
     private VendorHandoffReceiptRepository receiptRepository;
@@ -63,6 +69,7 @@ class GroupLandingIntegrationTest {
     private StringRedisTemplate stringRedisTemplate;
 
     private TeamBuildingPlan plan;
+    private Long templateId;
 
     @BeforeEach
     void setUp() {
@@ -72,6 +79,7 @@ class GroupLandingIntegrationTest {
             entityManager.createNativeQuery("delete from vendor_handoff_receipt").executeUpdate();
             entityManager.createNativeQuery("delete from budget_transaction").executeUpdate();
             entityManager.createNativeQuery("delete from group_batch").executeUpdate();
+            entityManager.createNativeQuery("delete from constraint_condition").executeUpdate();
             entityManager.createNativeQuery("delete from team_building_plan").executeUpdate();
             entityManager.createNativeQuery(
                     "update budget_pool set total_amount=10000, occupied_amount=0 where id=1").executeUpdate();
@@ -89,31 +97,36 @@ class GroupLandingIntegrationTest {
                 .maxParticipants(50)
                 .suitableActivities("户外拓展,聚餐,露营")
                 .build());
+        templateId = defaultTemplate(new BigDecimal("999999.00"), 20);
     }
 
-    private GroupBatchLandingRequest landingRequest(long planId, String date, int size) {
+    private GroupBatchLandingRequest landingRequest(long planId, long templateId, String date, int size) {
         return GroupBatchLandingRequest.builder()
                 .planId(planId)
+                .templateId(templateId)
                 .travelDate(LocalDate.parse(date))
                 .groupSize(size)
-                .maxDurationDays(3)
-                .requiredActivities("户外拓展")
                 .build();
     }
 
-    private ConstraintRequest constraint(BigDecimal templateLimit, int people) {
-        return ConstraintRequest.builder()
-                .templateName("测试模板")
+    private Long createTemplate(String name, BigDecimal templateLimit, int people,
+                                int maxDays, String activities) {
+        return constraintService.createTemplate(ConstraintRequest.builder()
+                .templateName(name)
                 .budgetLimit(templateLimit)
-                .maxDurationDays(3)
+                .maxDurationDays(maxDays)
                 .participantCount(people)
-                .requiredActivities("户外拓展")
-                .build();
+                .requiredActivities(activities)
+                .build()).getId();
+    }
+
+    private Long defaultTemplate(BigDecimal templateLimit, int people) {
+        return createTemplate("测试模板", templateLimit, people, 3, "户外拓展");
     }
 
     @Test
     void land_createsBatchAndHoldsBudgetAtomically() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2026-10-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2026-10-01", 20), null);
 
         assertEquals(GroupBatch.STATUS_ACTIVE, batch.getStatus());
         assertEquals(0, new BigDecimal("6000.00").compareTo(batch.getLockedAmount()));
@@ -131,8 +144,9 @@ class GroupLandingIntegrationTest {
     @Test
     void land_failsWhenPoolBalanceInsufficient_andRollsEverythingBack() {
         // 池子里只有 10000，40 人 × 300 = 12000 > 余额
+        Long template40 = defaultTemplate(new BigDecimal("999999.00"), 40);
         BusinessConflictException ex = assertThrows(BusinessConflictException.class,
-                () -> batchService.land(landingRequest(plan.getId(), "2026-10-02", 40), null));
+                () -> batchService.land(landingRequest(plan.getId(), template40, "2026-10-02", 40), null));
         assertTrue(ex.getMessage().contains("余额不足"));
 
         // 台账没留下、钱没扣
@@ -153,7 +167,7 @@ class GroupLandingIntegrationTest {
             pool.submit(() -> {
                 try {
                     start.await();
-                    batchService.land(landingRequest(plan.getId(), "2026-11-11", 10), null);
+                    batchService.land(landingRequest(plan.getId(), templateId, "2026-11-11", 20), null);
                     success.incrementAndGet();
                 } catch (BusinessConflictException e) {
                     conflict.incrementAndGet();
@@ -170,7 +184,7 @@ class GroupLandingIntegrationTest {
         assertEquals(threads - 1, conflict.get(), "后到的人应看到场地已占");
 
         // 预算只被扣一次
-        assertEquals(0, new BigDecimal("3000.00").compareTo(budgetService.getPool().getOccupiedAmount()));
+        assertEquals(0, new BigDecimal("6000.00").compareTo(budgetService.getPool().getOccupiedAmount()));
         assertEquals(1, transactionRepository.findAll().stream()
                 .filter(t -> "HOLD".equals(t.getType())).count());
     }
@@ -178,8 +192,8 @@ class GroupLandingIntegrationTest {
     @Test
     void compare_usesPoolBalance_notTemplateLimit() {
         // 模板上限写成 999999（对账口径算合规），但池子余额只剩 10000
-        List<PlanCompareResult> results = planService.comparePlans(
-                constraint(new BigDecimal("999999.00"), 40));
+        Long template40 = defaultTemplate(new BigDecimal("999999.00"), 40);
+        List<PlanCompareResult> results = planService.comparePlans(template40);
         PlanCompareResult result = results.stream()
                 .filter(r -> r.getPlanId().equals(plan.getId())).findFirst().orElseThrow();
 
@@ -190,9 +204,8 @@ class GroupLandingIntegrationTest {
         assertTrue(result.getIsTemplateBudgetCompliant());
 
         // 先落一条占用 6000，余额变 4000，20 人的方案（6000）也不能再被筛成合规
-        batchService.land(landingRequest(plan.getId(), "2026-12-01", 20), null);
-        List<PlanCompareResult> after = planService.comparePlans(
-                constraint(new BigDecimal("999999.00"), 20));
+        batchService.land(landingRequest(plan.getId(), templateId, "2026-12-01", 20), null);
+        List<PlanCompareResult> after = planService.comparePlans(templateId);
         PlanCompareResult afterResult = after.stream()
                 .filter(r -> r.getPlanId().equals(plan.getId())).findFirst().orElseThrow();
         assertFalse(afterResult.getIsBudgetCompliant(), "已扣出去的钱不能再让第二套方案筛成合规");
@@ -201,7 +214,7 @@ class GroupLandingIntegrationTest {
 
     @Test
     void changingPlanCost_beforeHandoff_invalidatesBatchAndRefunds_andBlocksSupplierContact() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-01-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-01-01", 20), null);
         assertEquals(0, new BigDecimal("6000.00").compareTo(budgetService.getPool().getOccupiedAmount()));
 
         // 还没交场：供应商不能进场（两道签字没齐，库里也没有回执）
@@ -264,13 +277,14 @@ class GroupLandingIntegrationTest {
                 .maxParticipants(40)
                 .suitableActivities("户外拓展")
                 .build());
-        GroupBatch again = batchService.land(landingRequest(plan2.getId(), "2027-01-01", 10), null);
+        Long template10 = defaultTemplate(new BigDecimal("999999.00"), 10);
+        GroupBatch again = batchService.land(landingRequest(plan2.getId(), template10, "2027-01-01", 10), null);
         assertEquals(GroupBatch.STATUS_ACTIVE, again.getStatus());
     }
 
     @Test
     void reviewSignBeforeContactArrive_isRejected() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-05-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-05-01", 20), null);
         // 复核人不能跳过现场到场记录直接签
         BusinessConflictException ex = assertThrows(BusinessConflictException.class,
                 () -> batchService.reviewSign(batch.getId(), "复核人老李"));
@@ -281,7 +295,7 @@ class GroupLandingIntegrationTest {
 
     @Test
     void twoSignaturesComplete_createsSingleReceipt_andAllowsSupplierEntry() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-06-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-06-01", 20), null);
 
         batchService.contactArrive(batch.getId(), "现场对接人老王");
         GroupBatch afterFirst = batchService.getBatch(batch.getId());
@@ -321,7 +335,7 @@ class GroupLandingIntegrationTest {
 
     @Test
     void concurrentReviewSigns_onlyOneReceipt_loserSeesVenueHandedOff() throws Exception {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-07-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-07-01", 20), null);
         // 第一道签字先落稳
         batchService.contactArrive(batch.getId(), "现场对接人老王");
 
@@ -363,7 +377,7 @@ class GroupLandingIntegrationTest {
 
     @Test
     void changingPlanCost_afterHandoff_keepsPoolBatchAndDate_onlyAddsReconcileNote() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-08-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-08-01", 20), null);
         BigDecimal occupiedBefore = budgetService.getPool().getOccupiedAmount();
         assertEquals(0, new BigDecimal("6000.00").compareTo(occupiedBefore));
 
@@ -416,7 +430,7 @@ class GroupLandingIntegrationTest {
 
     @Test
     void sameCostValueKeepsBatchActive() {
-        GroupBatch batch = batchService.land(landingRequest(plan.getId(), "2027-02-01", 20), null);
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-02-01", 20), null);
         // 改了别的字段，人均费用还是 300：批次不动
         planService.updatePlan(plan.getId(), PlanCreateRequest.builder()
                 .planName(plan.getPlanName())
@@ -431,21 +445,24 @@ class GroupLandingIntegrationTest {
                 .build());
         assertEquals(GroupBatch.STATUS_ACTIVE, batchService.getBatch(batch.getId()).getStatus());
         assertEquals(0, new BigDecimal("6000.00").compareTo(budgetService.getPool().getOccupiedAmount()));
-    }    @Test
-    void landingRejectsNonCompliantPlan() {
-        // 必备活动不满足
-        GroupBatchLandingRequest req = landingRequest(plan.getId(), "2027-03-01", 20);
-        req.setRequiredActivities("温泉");
-        assertThrows(BusinessConflictException.class, () -> batchService.land(req, null));
+    }
 
-        // 人数超出方案区间
+    @Test
+    void landingRejectsNonCompliantPlan() {
+        // 必备活动不满足：条件必须来自模板，不能由请求体塞一份旧条件
+        Long hotSpringTemplate = createTemplate("温泉模板", new BigDecimal("999999.00"), 20, 3, "温泉");
+        assertThrows(BusinessConflictException.class, () -> batchService.land(
+                landingRequest(plan.getId(), hotSpringTemplate, "2027-03-01", 20), null));
+
+        // 人数超出方案区间：模板人数和成团人数一致，但仍必须落在方案支持范围内
+        Long template99 = defaultTemplate(new BigDecimal("999999.00"), 99);
         assertThrows(BusinessConflictException.class,
-                () -> batchService.land(landingRequest(plan.getId(), "2027-03-02", 99), null));
+                () -> batchService.land(landingRequest(plan.getId(), template99, "2027-03-02", 99), null));
 
         // 天数超限
-        GroupBatchLandingRequest shortLimit = landingRequest(plan.getId(), "2027-03-03", 20);
-        shortLimit.setMaxDurationDays(1);
-        assertThrows(BusinessConflictException.class, () -> batchService.land(shortLimit, null));
+        Long oneDayTemplate = createTemplate("一日模板", new BigDecimal("999999.00"), 20, 1, "户外拓展");
+        assertThrows(BusinessConflictException.class, () -> batchService.land(
+                landingRequest(plan.getId(), oneDayTemplate, "2027-03-03", 20), null));
 
         assertEquals(0, batchRepository.count());
         assertEquals(0, BigDecimal.ZERO.compareTo(budgetService.getPool().getOccupiedAmount()));
@@ -453,7 +470,96 @@ class GroupLandingIntegrationTest {
 
     @Test
     void planWithActiveBatchCannotBeDeleted() {
-        batchService.land(landingRequest(plan.getId(), "2027-04-01", 20), null);
+        batchService.land(landingRequest(plan.getId(), templateId, "2027-04-01", 20), null);
         assertThrows(BusinessConflictException.class, () -> planService.deletePlan(plan.getId()));
+    }
+
+    @Test
+    void deletedTemplate_disappearsFromList_andCannotCompareOrLandButKeepsExistingBatch() {
+        GroupBatch batch = batchService.land(landingRequest(plan.getId(), templateId, "2027-09-01", 20), null);
+        BigDecimal occupiedBeforeDelete = budgetService.getPool().getOccupiedAmount();
+
+        constraintService.deleteTemplate(templateId);
+
+        // 已删编号不能再出现在列表、对比入口、落地入口
+        assertTrue(constraintService.getAllTemplates().stream().noneMatch(t -> t.getId().equals(templateId)));
+        assertThrows(NoSuchElementException.class, () -> constraintService.getTemplateById(templateId));
+        assertThrows(NoSuchElementException.class, () -> planService.comparePlans(templateId));
+        assertThrows(NoSuchElementException.class,
+                () -> batchService.land(landingRequest(plan.getId(), templateId, "2027-09-02", 20), null));
+
+        // 已落地且生效的批次：预算占用、场地占位、台账状态都不被模板删除冲掉
+        GroupBatch reloaded = batchService.getBatch(batch.getId());
+        assertEquals(GroupBatch.STATUS_ACTIVE, reloaded.getStatus());
+        assertEquals(templateId, reloaded.getConstraintTemplateId());
+        assertNotNull(reloaded.getActiveKey());
+        assertEquals(0, occupiedBeforeDelete.compareTo(budgetService.getPool().getOccupiedAmount()));
+        assertFalse(transactionRepository.findAll().stream()
+                .anyMatch(t -> "REFUND".equals(t.getType())), "删除模板不能触发退款");
+
+        // 场地仍被老批次占着：换一份新模板也不能在同一天同场地再落一批
+        Long replacementTemplate = defaultTemplate(new BigDecimal("999999.00"), 10);
+        TeamBuildingPlan anotherPlan = planService.createPlan(PlanCreateRequest.builder()
+                .planName("湖畔方案")
+                .transportation("自驾")
+                .venue("青云山营地")
+                .projects("徒步")
+                .costPerPerson(new BigDecimal("200.00"))
+                .durationDays(1)
+                .minParticipants(5)
+                .maxParticipants(40)
+                .suitableActivities("户外拓展")
+                .build());
+        BusinessConflictException conflict = assertThrows(BusinessConflictException.class,
+                () -> batchService.land(
+                        landingRequest(anotherPlan.getId(), replacementTemplate, "2027-09-01", 10), null));
+        assertTrue(conflict.getMessage().contains("已有生效的落地批次"));
+        assertEquals(1, batchRepository.findByStatusOrderByCreatedAtDesc(GroupBatch.STATUS_ACTIVE).size());
+    }
+
+    @Test
+    void deleteCommitsWhenCacheEvictionFails_andEntryImmediatelyRejectsOldId() {
+        // Redis 清理失败属于提交后的旁路失败：数据库删除必须已提交，不能留下“列表没了、入口还认”的中间态
+        Mockito.doThrow(new RuntimeException("redis unavailable"))
+                .when(stringRedisTemplate).delete(ArgumentMatchers.startsWith("tuanjian:constraint:"));
+
+        assertDoesNotThrow(() -> constraintService.deleteTemplate(templateId));
+
+        assertTrue(constraintService.getAllTemplates().isEmpty());
+        assertThrows(NoSuchElementException.class, () -> planService.comparePlans(templateId));
+        Mockito.reset(stringRedisTemplate);
+    }
+
+    @Test
+    void concurrentDeletes_onlyOneSucceeds_loserSeesTemplateGone() throws Exception {
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger gone = new AtomicInteger();
+        AtomicInteger other = new AtomicInteger();
+
+        for (int i = 0; i < threads; i++) {
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    constraintService.deleteTemplate(templateId);
+                    success.incrementAndGet();
+                } catch (NoSuchElementException e) {
+                    gone.incrementAndGet();
+                } catch (Exception e) {
+                    other.incrementAndGet();
+                }
+            });
+        }
+        start.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+
+        assertEquals(1, success.get(), "同一份模板只能删除一次");
+        assertEquals(threads - 1, gone.get(), "并发落败方必须看到模板已不在");
+        assertEquals(0, other.get());
+        assertEquals(0, constraintService.getAllTemplates().size());
+        assertThrows(NoSuchElementException.class, () -> planService.comparePlans(templateId));
     }
 }

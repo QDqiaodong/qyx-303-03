@@ -1,12 +1,14 @@
 package com.example.tuanjian;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.dto.request.GroupBatchLandingRequest;
 import com.example.tuanjian.dto.request.PlanCreateRequest;
 import com.example.tuanjian.entity.GroupBatch;
 import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.repository.VendorHandoffReceiptRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import jakarta.persistence.EntityManager;
@@ -55,6 +57,8 @@ class GroupLandingWebConcurrencyTest {
     @Autowired
     private BudgetService budgetService;
     @Autowired
+    private ConstraintConditionService constraintService;
+    @Autowired
     private EntityManager entityManager;
     @Autowired
     private TransactionTemplate transactionTemplate;
@@ -64,6 +68,7 @@ class GroupLandingWebConcurrencyTest {
 
     private Long planA;
     private Long planB;
+    private Long templateId;
 
     @BeforeEach
     void setUp() {
@@ -71,6 +76,7 @@ class GroupLandingWebConcurrencyTest {
             entityManager.createNativeQuery("delete from vendor_handoff_receipt").executeUpdate();
             entityManager.createNativeQuery("delete from budget_transaction").executeUpdate();
             entityManager.createNativeQuery("delete from group_batch").executeUpdate();
+            entityManager.createNativeQuery("delete from constraint_condition").executeUpdate();
             entityManager.createNativeQuery("delete from team_building_plan").executeUpdate();
             entityManager.createNativeQuery(
                     "update budget_pool set total_amount=100000, occupied_amount=0 where id=1").executeUpdate();
@@ -80,6 +86,13 @@ class GroupLandingWebConcurrencyTest {
         TeamBuildingPlan b = planService.createPlan(plan("方案乙", "湖畔营地", "200.00"));
         planA = a.getId();
         planB = b.getId();
+        templateId = constraintService.createTemplate(ConstraintRequest.builder()
+                .templateName("并发落地模板")
+                .budgetLimit(new BigDecimal("999999.00"))
+                .maxDurationDays(3)
+                .participantCount(20)
+                .requiredActivities("户外拓展")
+                .build()).getId();
     }
 
     private PlanCreateRequest plan(String name, String venue, String cost) {
@@ -112,10 +125,9 @@ class GroupLandingWebConcurrencyTest {
                     start.await();
                     GroupBatchLandingRequest req = GroupBatchLandingRequest.builder()
                             .planId(planId)
+                            .templateId(templateId)
                             .travelDate(LocalDate.parse("2028-05-01"))
                             .groupSize(20)
-                            .maxDurationDays(3)
-                            .requiredActivities("户外拓展")
                             .build();
                     int code = mockMvc.perform(post("/api/batches/land")
                                     .contentType(MediaType.APPLICATION_JSON)
@@ -149,10 +161,9 @@ class GroupLandingWebConcurrencyTest {
         Long planId = planService.createPlan(plan("方案丙", "湖畔营地", "300.00")).getId();
         GroupBatchLandingRequest landReq = GroupBatchLandingRequest.builder()
                 .planId(planId)
+                .templateId(templateId)
                 .travelDate(LocalDate.parse("2028-06-01"))
                 .groupSize(20)
-                .maxDurationDays(3)
-                .requiredActivities("户外拓展")
                 .build();
         String landResp = mockMvc.perform(post("/api/batches/land")
                         .contentType(MediaType.APPLICATION_JSON)

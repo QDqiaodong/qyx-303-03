@@ -1,14 +1,15 @@
 package com.example.tuanjian.service.impl;
 
-import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.dto.request.PlanCreateRequest;
 import com.example.tuanjian.dto.response.PlanCompareResult;
+import com.example.tuanjian.entity.ConstraintCondition;
 import com.example.tuanjian.entity.GroupBatch;
 import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.exception.BusinessConflictException;
 import com.example.tuanjian.repository.GroupBatchRepository;
 import com.example.tuanjian.repository.TeamBuildingPlanRepository;
 import com.example.tuanjian.service.BudgetService;
+import com.example.tuanjian.service.ConstraintConditionService;
 import com.example.tuanjian.service.GroupBatchService;
 import com.example.tuanjian.service.TeamBuildingPlanService;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +34,7 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
     private final TeamBuildingPlanRepository planRepository;
     private final GroupBatchRepository batchRepository;
     private final BudgetService budgetService;
+    private final ConstraintConditionService constraintService;
     private final GroupBatchService groupBatchService;
 
     @Override
@@ -111,7 +113,9 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
     }
 
     @Override
-    public List<PlanCompareResult> comparePlans(ConstraintRequest constraint) {
+    @Transactional
+    public List<PlanCompareResult> comparePlans(Long templateId) {
+        ConstraintCondition constraint = constraintService.getActiveTemplateForUpdate(templateId);
         List<TeamBuildingPlan> plans = planRepository.findAll();
         // 落地口径：预算只认池子当时未被占住的余额；模板上限仅用于建模板和对账展示
         BigDecimal availableBudget = budgetService.getPool().getAvailableAmount();
@@ -132,7 +136,7 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
         return results;
     }
 
-    private PlanCompareResult evaluatePlan(TeamBuildingPlan plan, ConstraintRequest constraint,
+    private PlanCompareResult evaluatePlan(TeamBuildingPlan plan, ConstraintCondition constraint,
                                            BigDecimal availableBudget, List<GroupBatch> activeBatches) {
         List<String> compliantItems = new ArrayList<>();
         List<String> nonCompliantItems = new ArrayList<>();
@@ -218,7 +222,7 @@ public class TeamBuildingPlanServiceImpl implements TeamBuildingPlanService {
                 .build();
     }
 
-    private double calculateAdaptabilityScore(TeamBuildingPlan plan, ConstraintRequest constraint,
+    private double calculateAdaptabilityScore(TeamBuildingPlan plan, ConstraintCondition constraint,
                                               BigDecimal availableBudget,
                                               boolean budgetCompliant, boolean durationCompliant,
                                               boolean participantCompliant, boolean activitiesCompliant) {

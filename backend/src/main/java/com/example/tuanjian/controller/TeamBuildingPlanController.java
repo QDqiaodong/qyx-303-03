@@ -1,7 +1,7 @@
 package com.example.tuanjian.controller;
 
-import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.dto.request.PlanCreateRequest;
+import com.example.tuanjian.dto.request.TemplateReferenceRequest;
 import com.example.tuanjian.dto.response.PlanCompareResult;
 import com.example.tuanjian.entity.TeamBuildingPlan;
 import com.example.tuanjian.service.BudgetService;
@@ -55,14 +55,14 @@ public class TeamBuildingPlanController {
     }
 
     @PostMapping("/compare")
-    public ResponseEntity<List<PlanCompareResult>> comparePlans(@Valid @RequestBody ConstraintRequest constraint) {
-        List<PlanCompareResult> results = planService.comparePlans(constraint);
+    public ResponseEntity<List<PlanCompareResult>> comparePlans(@Valid @RequestBody TemplateReferenceRequest request) {
+        List<PlanCompareResult> results = planService.comparePlans(request.getTemplateId());
         return ResponseEntity.ok(results);
     }
 
     @PostMapping("/compare/filter")
-    public ResponseEntity<Map<String, Object>> compareAndFilter(@Valid @RequestBody ConstraintRequest constraint) {
-        List<PlanCompareResult> allResults = planService.comparePlans(constraint);
+    public ResponseEntity<Map<String, Object>> compareAndFilter(@Valid @RequestBody TemplateReferenceRequest request) {
+        List<PlanCompareResult> allResults = planService.comparePlans(request.getTemplateId());
         List<PlanCompareResult> compliantResults = allResults.stream()
                 .filter(PlanCompareResult::getIsAllCompliant)
                 .toList();
@@ -72,7 +72,7 @@ public class TeamBuildingPlanController {
                 "compliantResults", compliantResults,
                 "totalCount", allResults.size(),
                 "compliantCount", compliantResults.size(),
-                // 预算裁决口径：池子里还没被占住的余额；模板上限只随请求体用于建模板和对账展示
+                // 预算裁决口径：池子里还没被占住的余额；模板上限只随服务端模板记录用于对账展示
                 "budgetPool", budgetService.getPool()
         ));
     }

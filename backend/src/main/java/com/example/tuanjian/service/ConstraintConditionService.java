@@ -15,6 +15,9 @@ public interface ConstraintConditionService {
 
     ConstraintCondition getTemplateById(Long id);
 
+    /** 对比/落地事务内使用：加锁读取启用模板；已删除或不存在直接报错，和删除事务互斥 */
+    ConstraintCondition getActiveTemplateForUpdate(Long id);
+
     List<ConstraintCondition> getAllTemplates();
 
     void saveToRedis(String key, ConstraintRequest constraint);

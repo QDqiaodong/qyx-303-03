@@ -51,6 +51,16 @@ public class GroupBatch {
     @Column(name = "plan_name", nullable = false, length = 100)
     private String planName;
 
+    /**
+     * 落地时引用的模板编号和名称快照。之后模板删除只禁止新对比/新落地，
+     * 不回滚这条已落地批次的预算和场地占用。
+     */
+    @Column(name = "constraint_template_id")
+    private Long constraintTemplateId;
+
+    @Column(name = "constraint_template_name", length = 100)
+    private String constraintTemplateName;
+
     @Column(name = "venue", nullable = false, length = 200)
     private String venue;
 

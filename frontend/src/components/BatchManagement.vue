@@ -41,6 +41,12 @@
       <el-table :data="batches" border stripe v-loading="batchLoading">
         <el-table-column prop="batchNo" label="批次号" width="180" />
         <el-table-column prop="planName" label="方案" width="150" show-overflow-tooltip />
+        <el-table-column label="落地依据模板" width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.constraintTemplateName || '—' }}
+            <span v-if="row.constraintTemplateId" class="template-id">#{{ row.constraintTemplateId }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="venue" label="场地" width="120" show-overflow-tooltip />
         <el-table-column label="出行日期" width="120">
           <template #default="{ row }">
@@ -463,6 +469,12 @@ onMounted(() => {
 .hold-amount {
   color: #f56c6c;
   font-weight: 600;
+}
+
+.template-id {
+  margin-left: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .invalid-reason {

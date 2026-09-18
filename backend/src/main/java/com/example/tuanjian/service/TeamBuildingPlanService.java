@@ -1,6 +1,5 @@
 package com.example.tuanjian.service;
 
-import com.example.tuanjian.dto.request.ConstraintRequest;
 import com.example.tuanjian.dto.request.PlanCreateRequest;
 import com.example.tuanjian.dto.response.PlanCompareResult;
 import com.example.tuanjian.entity.TeamBuildingPlan;
@@ -19,6 +18,6 @@ public interface TeamBuildingPlanService {
 
     List<TeamBuildingPlan> getAllPlans();
 
-    List<PlanCompareResult> comparePlans(ConstraintRequest constraint);
+    List<PlanCompareResult> comparePlans(Long templateId);
 
 }
